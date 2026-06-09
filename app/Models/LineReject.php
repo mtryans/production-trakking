@@ -2,10 +2,9 @@
 namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 
-class HourlyOutput extends Model
+class LineReject extends Model
 {
     protected $guarded = [];
-    protected $touches = ['productionOrder'];
 
     public function productionOrder() {
         return $this->belongsTo(ProductionOrder::class);

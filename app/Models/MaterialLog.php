@@ -1,15 +1,14 @@
 <?php
-
 namespace App\Models;
-
 use Illuminate\Database\Eloquent\Model;
 
 class MaterialLog extends Model
 {
     protected $guarded = [];
-    protected $touches = ['production_order'];
+    protected $touches = ['productionOrder'];
 
-    public function production_order() {
-        return $this->belongsTo(ProductionOrder::class);
-    }
+    public function productionOrder()
+{
+    return $this->belongsTo(ProductionOrder::class);
+}
 }
