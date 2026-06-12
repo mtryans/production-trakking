@@ -154,6 +154,22 @@ class TrackerController extends Controller
             'remarks'         => $request->remarks,
             'is_active'       => true,
         ]);
+                // Auto log status WAITING_CUTTING saat WO baru dibuat
+        \App\Models\WoStatusLog::create([
+            'work_order' => $request->workOrder,
+            'status'     => 'WAITING_CUTTING',
+            'changed_by' => $request->user ?? 'System',
+            'remarks'    => 'WO baru dibuat',
+        ]);
+
+        // Auto buat line assignment
+        \App\Models\WoLineAssignment::create([
+            'work_order'          => $request->workOrder,
+            'production_order_id' => $order->id,
+            'line_id'             => $request->lineId,
+            'type'                => 'PRIMARY',
+            'status'              => 'ACTIVE',
+        ]);
 
         $this->log('INPUT BARU', "New WO {$request->workOrder}", $request->workOrder, $request->lineId, $request->user);
         broadcast(new ProductionUpdated(['action' => 'created', 'id' => $order->id]))->toOthers();

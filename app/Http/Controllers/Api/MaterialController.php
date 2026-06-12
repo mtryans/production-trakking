@@ -12,40 +12,104 @@ use Illuminate\Http\Request;
 class MaterialController extends Controller
 {
     public function addCutting(Request $request)
-    {
-        $order = ProductionOrder::findOrFail($request->id);
+{
+    $order = ProductionOrder::findOrFail($request->id);
+    $qty = intval($request->qty);  // ← fix: pakai intval
+    $qty = intval($request->qty);
+    
+    $currentTotal = $order->cutting_total ?? 0;
+    $newTotal = $currentTotal + $qty;
 
-        MaterialLog::create([
-            'production_order_id' => $order->id,
-            'process_step'        => 'cutting',
-            'action'              => 'cutting',
-            'qty'                 => $request->qty,
-            'is_recut'            => false,
-            'user'                => $request->user ?? 'Unknown',
-        ]);
-
-        broadcast(new ProductionUpdated(['action' => 'material_updated', 'id' => $order->id]))->toOthers();
-        return response()->json(['success' => true]);
+    // Lock: tidak boleh > order qty tanpa remarks
+    if ($newTotal > $order->order_qty) {
+        if (empty($request->remarks)) {
+            return response()->json([
+                'error' => "Cutting melebihi Order Qty ({$order->order_qty})! Wajib isi remarks.",
+                'requireRemarks' => true,
+            ], 422);
+        }
+        // Simpan remarks overqty
+        $order->cutting_overqty_remarks = $request->remarks;
     }
+
+    // Update cutting_total
+    $order->cutting_total = $newTotal;
+
+    // Auto update wo_status ke IN_CUTTING
+    if ($order->wo_status === 'WAITING_CUTTING') {
+        $order->wo_status = 'IN_CUTTING';
+        \App\Models\WoStatusLog::create([
+            'work_order' => $order->work_order,
+            'status'     => 'IN_CUTTING',
+            'changed_by' => $request->user ?? 'Unknown',
+            'remarks'    => 'Cutting mulai diinput',
+        ]);
+    }
+
+    $order->save();
+
+    MaterialLog::create([
+        'production_order_id' => $order->id,
+        'process_step'        => 'cutting',
+        'action'              => 'cutting',
+        'qty'                 => $qty,
+        'is_recut'            => false,
+        'user'                => $request->user ?? 'Unknown',
+        'notes'               => $request->remarks ?? null,
+    ]);
+
+    broadcast(new ProductionUpdated(['action' => 'material_updated', 'id' => $order->id]))->toOthers();
+    return response()->json(['success' => true, 'newTotal' => $newTotal]);
+}
 
     public function addPrep(Request $request)
-    {
-        $order = ProductionOrder::findOrFail($request->id);
-        $field = 'prep_' . $request->process;
+{
+    $order = ProductionOrder::findOrFail($request->id);
+    $qty = intval($request->qty);
+    $field = 'prep_' . $request->process;
 
-        $order->increment($field, $request->qty);
+    // Hitung total semua prep sekarang
+    $totalPrep = ($order->prep_bonding ?? 0)
+        + ($order->prep_skiving ?? 0)
+        + ($order->prep_lining ?? 0)
+        + ($order->prep_painting ?? 0)
+        + ($order->prep_gluing ?? 0);
 
-        MaterialLog::create([
-            'production_order_id' => $order->id,
-            'process_step'        => $request->process,
-            'action'              => 'prep_add',
-            'qty'                 => $request->qty,
-            'user'                => $request->user ?? 'Unknown',
-        ]);
+    $cuttingTotal = $order->cutting_total ?? 0;
 
-        broadcast(new ProductionUpdated(['action' => 'material_updated', 'id' => $order->id]))->toOthers();
-        return response()->json(['success' => true]);
+    // Lock: total prep tidak boleh > cutting total
+    if (($totalPrep + $qty) > $cuttingTotal) {
+        $sisa = $cuttingTotal - $totalPrep;
+        return response()->json([
+            'error' => "Total prep akan melebihi cutting ({$cuttingTotal})! Sisa yang bisa diinput: {$sisa} pcs.",
+        ], 422);
     }
+
+    $order->increment($field, $qty);
+
+    // Auto update wo_status ke IN_PREP
+    if ($order->wo_status === 'IN_CUTTING') {
+        $order->wo_status = 'IN_PREP';
+        $order->save();
+        \App\Models\WoStatusLog::create([
+            'work_order' => $order->work_order,
+            'status'     => 'IN_PREP',
+            'changed_by' => $request->user ?? 'Unknown',
+            'remarks'    => 'Prep mulai diinput',
+        ]);
+    }
+
+    MaterialLog::create([
+        'production_order_id' => $order->id,
+        'process_step'        => $request->process,
+        'action'              => 'prep_add',
+        'qty'                 => $qty,
+        'user'                => $request->user ?? 'Unknown',
+    ]);
+
+    broadcast(new ProductionUpdated(['action' => 'material_updated', 'id' => $order->id]))->toOthers();
+    return response()->json(['success' => true]);
+}
 
     public function prepTransfer(Request $request)
     {
@@ -152,6 +216,31 @@ class MaterialController extends Controller
         broadcast(new ProductionUpdated(['action' => 'material_updated', 'id' => $reject->production_order_id]))->toOthers();
         return response()->json(['success' => true]);
     }
+    
+    public function addRepair(Request $request)
+{
+    $order = ProductionOrder::findOrFail($request->id);
+
+    if (empty($request->remarks)) {
+        return response()->json([
+            'error' => 'Remarks wajib diisi untuk Repair!',
+        ], 422);
+    }
+
+    // Repair tidak nambah cutting total maupun scrap
+    MaterialLog::create([
+        'production_order_id' => $order->id,
+        'process_step'        => $request->fromPrep ?? 'cutting',
+        'action'              => 'repair',
+        'qty'                 => intval($request->qty),
+        'is_recut'            => false,
+        'user'                => $request->user ?? 'Unknown',
+        'notes'               => $request->remarks,
+    ]);
+
+    broadcast(new ProductionUpdated(['action' => 'material_updated', 'id' => $order->id]))->toOthers();
+    return response()->json(['success' => true]);
+}
 
     public function processRecut(Request $request)
     {
@@ -168,7 +257,8 @@ class MaterialController extends Controller
             'recut_done' => $recutQty,
             'scrap_done' => $scrapQty,
         ]);
-
+        
+        
         $order = ProductionOrder::findOrFail($recut->production_order_id);
         $order->increment('scrap_total', $scrapQty);
 

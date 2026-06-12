@@ -29,6 +29,25 @@ window.Echo = new Echo({
   enabledTransports: ['ws'],
 });
 
+// DEBUG - tambahkan ini
+console.log('REVERB CONFIG:', {
+  key: import.meta.env.VITE_REVERB_APP_KEY,
+  host: import.meta.env.VITE_REVERB_HOST,
+  port: import.meta.env.VITE_REVERB_PORT,
+});
+
+window.Echo.connector.pusher.connection.bind('connected', () => {
+  console.log('✅ Reverb CONNECTED!');
+});
+
+window.Echo.connector.pusher.connection.bind('disconnected', () => {
+  console.log('❌ Reverb DISCONNECTED!');
+});
+
+window.Echo.connector.pusher.connection.bind('error', (err: any) => {
+  console.log('❌ Reverb ERROR:', err);
+});
+
 // --- CONSTANTS ---
 const TIME_SLOTS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
 const PREP_STAGES = ['bonding', 'skiving', 'lining', 'painting', 'gluing'];
@@ -43,11 +62,27 @@ function getCSRF(): string {
   return (document.querySelector('meta[name="csrf-token"]') as HTMLMetaElement)?.content ?? '';
 }
 
-// --- API HELPER ---
+// --- API HELPER DENGAN PENANGANAN ERROR ---
+const handleResponse = async (res: Response) => {
+    if (!res.ok) {
+        const errorText = await res.text();
+        let errorMessage = 'Terjadi kesalahan';
+        try {
+            const parsed = JSON.parse(errorText);
+            errorMessage = parsed.error ?? parsed.message ?? errorText;
+        } catch {}
+        console.error(`API Error (${res.status}):`, errorText);
+        const err: any = new Error(errorMessage);
+        err.status = res.status;
+        throw err;
+    }
+    return res.json();
+};
+
 const api = {
   get: async (url: string) => {
     const res = await fetch(url);
-    return res.json();
+    return handleResponse(res);
   },
   post: async (url: string, data: any) => {
     const res = await fetch(url, {
@@ -55,7 +90,7 @@ const api = {
       headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': getCSRF() },
       body: JSON.stringify(data),
     });
-    return res.json();
+    return handleResponse(res);
   },
   put: async (url: string, data: any) => {
     const res = await fetch(url, {
@@ -63,14 +98,14 @@ const api = {
       headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': getCSRF() },
       body: JSON.stringify(data),
     });
-    return res.json();
+    return handleResponse(res);
   },
   delete: async (url: string) => {
     const res = await fetch(url, {
       method: 'DELETE',
       headers: { 'X-CSRF-TOKEN': getCSRF() },
     });
-    return res.json();
+    return handleResponse(res);
   },
 };
 
@@ -209,6 +244,82 @@ export default function App() {
   const [userFormData, setUserFormData] = useState({ username: '', pass: '', role: 'USER', name: '' });
   const [editingId, setEditingId] = useState<number | null>(null);
 
+  // --- WO STATUS STATE ---
+  const [woStatusList, setWoStatusList] = useState<any[]>([]);
+  const [woStatusSearch, setWoStatusSearch] = useState('');
+  const [isWoDetailOpen, setIsWoDetailOpen] = useState(false);
+  const [selectedWoDetail, setSelectedWoDetail] = useState<any>(null);
+  const [woDetailLoading, setWoDetailLoading] = useState(false);
+  const [isTransferOpen, setIsTransferOpen] = useState(false);
+  const [isSplitOpen, setIsSplitOpen] = useState(false);
+  const [selectedWoForAction, setSelectedWoForAction] = useState<any>(null);
+  const [transferForm, setTransferForm] = useState({ newLineId: LINES[0], remarks: '' });
+  const [splitForm, setSplitForm] = useState({ newLineId: LINES[0], targetQty: 0, remarks: '' });
+
+  // --- WO STATUS FUNCTIONS ---
+  const loadWoStatus = async () => {
+      try {
+          const data = await api.get(`/api/wo-status?search=${woStatusSearch}`);
+          setWoStatusList(data);
+      } catch (e) { console.error(e); }
+  };
+
+  const openWoDetail = async (workOrder: string) => {
+      setWoDetailLoading(true);
+      setIsWoDetailOpen(true);
+      try {
+          const data = await api.get(`/api/wo-status/${workOrder}/detail`);
+          setSelectedWoDetail(data);
+      } catch (e) { console.error(e); }
+      setWoDetailLoading(false);
+  };
+
+  const handleChangeStatus = async (workOrder: string, newStatus: string, remarks: string = '') => {
+      try {
+          await api.post(`/api/wo-status/${workOrder}/change-status`, {
+              status: newStatus,
+              user: `${appUser?.username} (${appUser?.role})`,
+              userRole: appUser?.role,
+              remarks,
+          });
+          await loadWoStatus();
+          if (selectedWoDetail?.workOrder === workOrder) {
+              await openWoDetail(workOrder);
+          }
+      } catch (e: any) {
+          alert(e?.error ?? 'Gagal ubah status');
+      }
+  };
+
+  const handleTransfer = async () => {
+      if (!selectedWoForAction) return;
+      if (!transferForm.remarks) { alert('Remarks wajib diisi!'); return; }
+      try {
+          await api.post(`/api/wo-status/${selectedWoForAction.workOrder}/transfer`, {
+              newLineId: transferForm.newLineId,
+              remarks: transferForm.remarks,
+              user: `${appUser?.username} (${appUser?.role})`,
+          });
+          setIsTransferOpen(false);
+          await loadWoStatus();
+      } catch (e) { alert('Gagal transfer line'); }
+  };
+
+  const handleSplit = async () => {
+      if (!selectedWoForAction) return;
+      if (!splitForm.remarks) { alert('Remarks wajib diisi!'); return; }
+      try {
+          await api.post(`/api/wo-status/${selectedWoForAction.workOrder}/split`, {
+              newLineId: splitForm.newLineId,
+              targetQty: splitForm.targetQty,
+              remarks: splitForm.remarks,
+              user: `${appUser?.username} (${appUser?.role})`,
+          });
+          setIsSplitOpen(false);
+          await loadWoStatus();
+      } catch (e) { alert('Gagal split line'); }
+  };
+
   // --- CLOCK ---
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -230,7 +341,7 @@ export default function App() {
       setTargets(data);
       setLoading(false);
     } catch (e) {
-      console.error('Gagal load data:', e);
+      console.error('Gagal load data tracker:', e);
       setLoading(false);
     }
   };
@@ -260,6 +371,12 @@ export default function App() {
       window.Echo.leaveChannel('production');
     };
   }, []);
+
+  useEffect(() => {
+      if (activeTab === 'WO_STATUS') {
+          loadWoStatus();
+      }
+  }, [activeTab, woStatusSearch]);
 
   // --- LOAD HISTORY & TRASH ---
   useEffect(() => {
@@ -347,6 +464,21 @@ export default function App() {
     }
   };
 
+  const getStatusBadge = (status: string) => {
+      const map: any = {
+          'WAITING_CUTTING':  { label: 'Waiting Cutting',   color: 'bg-gray-500' },
+          'IN_CUTTING':       { label: 'In Cutting',         color: 'bg-red-500' },
+          'IN_PREP':          { label: 'In Preparation',     color: 'bg-indigo-500' },
+          'IN_SEWING':        { label: 'In Sewing',          color: 'bg-blue-500' },
+          'ONGOING_FG':       { label: 'Ongoing FG',         color: 'bg-yellow-500' },
+          'DONE_TO_STOCK':    { label: 'Done to Stock',      color: 'bg-teal-500' },
+          'DONE_TO_SHIPPING': { label: 'Done to Shipping',   color: 'bg-green-600' },
+          'DONE':             { label: 'DONE',               color: 'bg-emerald-700' },
+      };
+      const s = map[status] || { label: status, color: 'bg-gray-400' };
+      return <span className={`px-2 py-0.5 rounded text-[10px] font-black text-white ${s.color}`}>{s.label}</span>;
+  };
+
   // --- EXPORT HISTORY ---
   const handleExportHistory = () => {
     if (historyList.length === 0) { alert("Tidak ada data history."); return; }
@@ -402,7 +534,7 @@ export default function App() {
       }
       await loadTargets();
     } catch (err) {
-      alert("Gagal simpan ke server");
+      alert(err?.message ?? "Melebihin kuota Cutting.");
     } finally {
       setTimeout(() => { isBusy.current = false; }, 500);
     }
@@ -425,7 +557,7 @@ export default function App() {
       if (rmkInput) rmkInput.value = '';
       await loadTargets();
     } catch (err) {
-      alert("Gagal memproses reject line");
+      alert("Gagal memproses reject line.");
     } finally {
       setTimeout(() => { isBusy.current = false; }, 500);
     }
@@ -438,7 +570,7 @@ export default function App() {
       await api.post('/api/material/forward-reject', { id: item.id, rejectId });
       await loadTargets();
     } catch (err) {
-      alert("Gagal forward reject ke cutting");
+      alert("Gagal forward reject ke cutting.");
     } finally {
       setTimeout(() => { isBusy.current = false; }, 500);
     }
@@ -455,10 +587,9 @@ export default function App() {
       });
       await loadTargets();
     } catch (err: any) {
-      const data = await err;
-      alert(data?.error ?? "Gagal transfer prep");
+    alert(err.message ?? 'Gagal simpan ke server');
     } finally {
-      setTimeout(() => { isBusy.current = false; }, 500);
+        setTimeout(() => { isBusy.current = false; }, 500);
     }
   };
 
@@ -474,7 +605,7 @@ export default function App() {
       });
       await loadTargets();
     } catch (err) {
-      alert("Gagal memproses recut");
+      alert("Gagal memproses recut.");
     } finally {
       setTimeout(() => { isBusy.current = false; }, 500);
     }
@@ -484,19 +615,10 @@ export default function App() {
     if (!appUser || isReadOnly) return;
     isBusy.current = true;
     try {
-      const res = await fetch('/api/material/spm-send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CSRF-TOKEN': getCSRF() },
-        body: JSON.stringify({ id: item.id, qty: Number(value) }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        alert(err.error ?? 'Gagal kirim SPM');
-        return;
-      }
+      await api.post('/api/material/spm-send', { id: item.id, qty: Number(value) });
       await loadTargets();
-    } catch (err) {
-      alert("Gagal kirim SPM");
+    } catch (err: any) {
+      alert(err.message ?? "Gagal kirim SPM");
     } finally {
       setTimeout(() => { isBusy.current = false; }, 500);
     }
@@ -540,7 +662,7 @@ export default function App() {
       }
       await loadTargets();
       resetForm();
-    } catch (error) { alert("Gagal menyimpan."); }
+    } catch (error) { alert("Gagal menyimpan data master."); }
   };
 
   // --- HOURLY UPDATE ---
@@ -555,7 +677,7 @@ export default function App() {
         await api.put(`/api/tracker/${docId}`, { targetPerHour: value, user: appUser?.username });
         await loadTargets();
       }
-    } catch (error) { console.error("Update failed", error); }
+    } catch (error) { console.error("Update hourly failed", error); }
   };
 
   // --- DELETE / RESTORE / TRASH ---
@@ -677,7 +799,7 @@ export default function App() {
       data.sort((a: any, b: any) => (b.performance || 0) - (a.performance || 0));
       setBestEmployees(data);
       resetBestEmpForm();
-    } catch (e) { alert('Gagal menyimpan.'); }
+    } catch (e) { alert('Gagal menyimpan employee.'); }
   };
 
   const handleEditBestEmp = (emp: any) => {
@@ -1082,6 +1204,9 @@ export default function App() {
           </button>
           <button onClick={() => setActiveTab('MATERIAL')} className={`px-4 py-2 text-sm font-bold rounded-t-lg flex items-center gap-2 ${activeTab === 'MATERIAL' ? 'bg-white text-orange-900 border-t-2 border-orange-900 shadow-sm' : 'text-gray-500 hover:bg-gray-300'}`}>
             <Layers size={16} /> MATERIAL CONTROL
+          </button>
+          <button onClick={() => setActiveTab('WO_STATUS')} className={`px-4 py-2 text-sm font-bold rounded-t-lg flex items-center gap-2 ${activeTab === 'WO_STATUS' ? 'bg-white text-purple-900 border-t-2 border-purple-900 shadow-sm' : 'text-gray-500 hover:bg-gray-300'}`}>
+            <FileText size={16} /> WO STATUS
           </button>
         </div>
       </div>
@@ -1651,6 +1776,106 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* === WO STATUS TAB === */}
+        {activeTab === 'WO_STATUS' && (
+            <div className="space-y-4">
+                {/* HEADER & SEARCH */}
+                <div className="bg-white rounded shadow border border-purple-200 overflow-hidden">
+                    <div className="bg-purple-800 text-white px-3 py-2 font-bold text-sm flex items-center justify-between">
+                        <span className="flex items-center gap-2"><FileText size={16} /> WORK ORDER STATUS</span>
+                        <div className="flex gap-2 items-center">
+                            <input
+                                type="text"
+                                placeholder="Cari WO / Style / Customer..."
+                                value={woStatusSearch}
+                                onChange={e => setWoStatusSearch(e.target.value)}
+                                className="border rounded px-2 py-1 text-xs text-gray-800 w-52"
+                            />
+                            <button onClick={loadWoStatus} className="bg-white text-purple-800 px-2 py-1 rounded text-xs font-bold flex items-center gap-1 hover:bg-purple-100">
+                                <RefreshCw size={12} /> Refresh
+                            </button>
+                        </div>
+                    </div>
+                    {/* TABLE */}
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-xs border-collapse">
+                            <thead className="bg-purple-50 text-purple-900 font-bold border-b border-purple-200">
+                                <tr>
+                                    <th className="p-2 border-r text-left">WO / Customer</th>
+                                    <th className="p-2 border-r text-center">Style / Color</th>
+                                    <th className="p-2 border-r text-center">Line</th>
+                                    <th className="p-2 border-r text-center">Order Qty</th>
+                                    <th className="p-2 border-r text-center">Total Cutting</th>
+                                    <th className="p-2 border-r text-center">Total LINE</th>
+                                    <th className="p-2 border-r text-center">Total PAC</th>
+                                    <th className="p-2 border-r text-center">Audit</th>
+                                    <th className="p-2 border-r text-center">STATUS</th>
+                                    <th className="p-2 text-center">AKSI</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y divide-gray-100">
+                                {woStatusList.map((wo: any) => (
+                                    <tr key={wo.id} className="hover:bg-purple-50">
+                                        <td className="p-2 border-r">
+                                            <div className="font-bold text-blue-900 font-mono">{wo.workOrder}</div>
+                                            <div className="text-[10px] text-gray-500">{wo.customer}</div>
+                                        </td>
+                                        <td className="p-2 border-r text-center">
+                                            <div className="font-bold">{wo.style}</div>
+                                            <div className="text-[10px] text-gray-500">{wo.color}</div>
+                                        </td>
+                                        <td className="p-2 border-r text-center font-bold text-blue-900">
+                                            {wo.lineId}
+                                            {wo.lineAssignments?.length > 1 && (
+                                                <div className="text-[9px] text-orange-600 font-black">+{wo.lineAssignments.length - 1} line</div>
+                                            )}
+                                        </td>
+                                        <td className="p-2 border-r text-center font-bold">{wo.orderQty}</td>
+                                        <td className="p-2 border-r text-center font-bold text-red-600">{wo.totalCutting}</td>
+                                        <td className="p-2 border-r text-center font-bold text-blue-600">{wo.totalLine}</td>
+                                        <td className="p-2 border-r text-center font-bold text-green-600">{wo.totalPac}</td>
+                                        <td className="p-2 border-r text-center">
+                                            {wo.auditIssues?.length > 0 ? (
+                                                <span className="bg-red-100 text-red-700 px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 justify-center">
+                                                    <AlertTriangle size={10} /> {wo.auditIssues.join(', ')}
+                                                </span>
+                                            ) : (
+                                                <span className="text-green-600 text-[10px] font-bold">✅ OK</span>
+                                            )}
+                                        </td>
+                                        <td className="p-2 border-r text-center">{getStatusBadge(wo.woStatus)}</td>
+                                        <td className="p-2 text-center">
+                                            <div className="flex gap-1 justify-center flex-wrap">
+                                                <button
+                                                    onClick={() => openWoDetail(wo.workOrder)}
+                                                    className="bg-purple-600 hover:bg-purple-700 text-white px-2 py-1 rounded text-[10px] font-bold"
+                                                >DETAIL</button>
+                                                {canEditMaster && wo.woStatus !== 'DONE' && (
+                                                    <>
+                                                        <button
+                                                            onClick={() => { setSelectedWoForAction(wo); setSplitForm({ newLineId: LINES[0], targetQty: 0, remarks: '' }); setIsSplitOpen(true); }}
+                                                            className="bg-orange-500 hover:bg-orange-600 text-white px-2 py-1 rounded text-[10px] font-bold"
+                                                        >SPLIT</button>
+                                                        <button
+                                                            onClick={() => { setSelectedWoForAction(wo); setTransferForm({ newLineId: LINES[0], remarks: '' }); setIsTransferOpen(true); }}
+                                                            className="bg-teal-600 hover:bg-teal-700 text-white px-2 py-1 rounded text-[10px] font-bold"
+                                                        >TRANSFER</button>
+                                                    </>
+                                                )}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                                {woStatusList.length === 0 && (
+                                    <tr><td colSpan={10} className="p-8 text-center text-gray-400 font-bold">Tidak ada data WO.</td></tr>
+                                )}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        )}
       </div>
 
       {/* ── MODAL: INPUT / EDIT ── */}
@@ -2120,6 +2345,7 @@ export default function App() {
                         <option value="ADMINISTRATOR">ADMINISTRATOR</option><option value="CUTTING">CUTTING</option>
                         <option value="PREPARATION">PREPARATION</option><option value="SUPERMARKET">SUPERMARKET</option>
                         <option value="VIEWER">VIEWER</option><option value="FINANCE">FINANCE</option><option value="PLANNER">PLANNER</option>
+                        <option value="FINISH_GOOD">FINISH GOOD</option>
                       </select>
                     </div>
                     <button type="submit" className="w-full bg-green-600 text-white py-2 rounded font-bold shadow mt-2">TAMBAH USER</button>
@@ -2156,6 +2382,229 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* ── MODAL: WO DETAIL ── */}
+      {isWoDetailOpen && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl h-[85vh] flex flex-col overflow-hidden border-2 border-purple-700">
+                  <div className="bg-purple-800 text-white p-4 flex justify-between items-center shrink-0">
+                      <h2 className="font-bold flex items-center gap-2">
+                          <FileText size={20} /> DETAIL WO: {selectedWoDetail?.workOrder}
+                      </h2>
+                      <button onClick={() => setIsWoDetailOpen(false)} className="hover:bg-white/20 p-1 rounded-full"><X size={20} /></button>
+                  </div>
+
+                  {woDetailLoading ? (
+                      <div className="flex-1 flex items-center justify-center text-gray-500 font-bold">Loading...</div>
+                  ) : selectedWoDetail ? (
+                      <div className="flex-1 overflow-auto p-4 bg-gray-50 space-y-4">
+
+                          {/* INFO UTAMA */}
+                          <div className="bg-white rounded border border-purple-200 p-4">
+                              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                  <div>
+                                      <p className="text-[10px] text-gray-400 font-bold uppercase">Customer</p>
+                                      <p className="font-bold">{selectedWoDetail.customer}</p>
+                                  </div>
+                                  <div>
+                                      <p className="text-[10px] text-gray-400 font-bold uppercase">Style</p>
+                                      <p className="font-bold">{selectedWoDetail.style} - {selectedWoDetail.color}</p>
+                                  </div>
+                                  <div>
+                                      <p className="text-[10px] text-gray-400 font-bold uppercase">Order Qty</p>
+                                      <p className="font-black text-xl text-blue-700">{selectedWoDetail.orderQty}</p>
+                                  </div>
+                                  <div>
+                                      <p className="text-[10px] text-gray-400 font-bold uppercase">Status</p>
+                                      {getStatusBadge(selectedWoDetail.woStatus)}
+                                  </div>
+                              </div>
+                          </div>
+
+                          {/* AKUMULASI OUTPUT */}
+                          <div className="grid grid-cols-3 gap-4">
+                              <div className="bg-red-50 border border-red-200 rounded p-3 text-center">
+                                  <p className="text-[10px] text-gray-500 font-bold uppercase">Total Cutting</p>
+                                  <p className="text-3xl font-black text-red-600">{selectedWoDetail.totalCutting}</p>
+                              </div>
+                              <div className="bg-blue-50 border border-blue-200 rounded p-3 text-center">
+                                  <p className="text-[10px] text-gray-500 font-bold uppercase">Total LINE (Akumulatif)</p>
+                                  <p className="text-3xl font-black text-blue-600">{selectedWoDetail.totalLine}</p>
+                              </div>
+                              <div className="bg-green-50 border border-green-200 rounded p-3 text-center">
+                                  <p className="text-[10px] text-gray-500 font-bold uppercase">Total PAC (Akumulatif)</p>
+                                  <p className="text-3xl font-black text-green-600">{selectedWoDetail.totalPac}</p>
+                              </div>
+                          </div>
+
+                          {/* PER LINE DETAIL */}
+                          <div className="bg-white rounded border border-gray-200 overflow-hidden">
+                              <div className="bg-gray-700 text-white px-3 py-2 font-bold text-sm">OUTPUT PER LINE</div>
+                              <table className="w-full text-xs border-collapse">
+                                  <thead className="bg-gray-100 font-bold">
+                                      <tr>
+                                          <th className="p-2 border-r text-left">Line</th>
+                                          <th className="p-2 border-r text-center">Output LINE</th>
+                                          <th className="p-2 border-r text-center">Output PAC</th>
+                                          <th className="p-2 border-r text-center">Finish Qty</th>
+                                          <th className="p-2 border-r text-center">Audit J1-J7</th>
+                                          <th className="p-2 text-center">Status</th>
+                                      </tr>
+                                  </thead>
+                                  <tbody className="divide-y">
+                                      {selectedWoDetail.lineDetails?.map((ld: any, idx: number) => (
+                                          <tr key={idx} className="hover:bg-gray-50">
+                                              <td className="p-2 border-r font-bold text-blue-900">{ld.lineId}</td>
+                                              <td className="p-2 border-r text-center font-bold text-blue-600">{ld.totalLine}</td>
+                                              <td className="p-2 border-r text-center font-bold text-green-600">{ld.totalPac}</td>
+                                              <td className="p-2 border-r text-center">{ld.finishQty}</td>
+                                              <td className="p-2 border-r text-center">
+                                                  {ld.auditIssues?.length > 0 ? (
+                                                      <span className="text-red-600 font-bold text-[9px] flex items-center gap-1 justify-center">
+                                                          <AlertTriangle size={10} /> {ld.auditIssues.slice(0, 3).join(', ')}
+                                                          {ld.auditIssues.length > 3 && `+${ld.auditIssues.length - 3} lagi`}
+                                                      </span>
+                                                  ) : <span className="text-green-600 font-bold">✅ OK</span>}
+                                              </td>
+                                              <td className="p-2 text-center">{getStatusBadge(ld.woStatus)}</td>
+                                          </tr>
+                                      ))}
+                                  </tbody>
+                              </table>
+                          </div>
+
+                          {/* CHANGE STATUS */}
+                          {selectedWoDetail.woStatus !== 'DONE' && (
+                              <div className="bg-white rounded border border-gray-200 p-4">
+                                  <p className="font-bold text-sm mb-3 text-gray-700">UBAH STATUS WO</p>
+                                  <div className="flex gap-2 flex-wrap">
+                                      {selectedWoDetail.woStatus === 'WAITING_CUTTING' && (
+                                          <button onClick={() => handleChangeStatus(selectedWoDetail.workOrder, 'IN_CUTTING')} className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded text-xs font-bold">→ IN CUTTING</button>
+                                      )}
+                                      {selectedWoDetail.woStatus === 'IN_CUTTING' && (
+                                          <button onClick={() => handleChangeStatus(selectedWoDetail.workOrder, 'IN_PREP')} className="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-1.5 rounded text-xs font-bold">→ IN PREP</button>
+                                      )}
+                                      {selectedWoDetail.woStatus === 'IN_PREP' && (
+                                          <button onClick={() => handleChangeStatus(selectedWoDetail.workOrder, 'IN_SEWING')} className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1.5 rounded text-xs font-bold">→ IN SEWING</button>
+                                      )}
+                                      {selectedWoDetail.woStatus === 'IN_SEWING' && (
+                                          <button onClick={() => handleChangeStatus(selectedWoDetail.workOrder, 'ONGOING_FG')} className="bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1.5 rounded text-xs font-bold">→ ONGOING FG</button>
+                                      )}
+                                      {['ONGOING_FG', 'DONE_TO_STOCK', 'DONE_TO_SHIPPING'].includes(selectedWoDetail.woStatus) &&
+                                          ['ADMINISTRATOR', 'FINISH_GOOD'].includes(appUser?.role) && (
+                                          <>
+                                              {selectedWoDetail.woStatus !== 'DONE_TO_STOCK' && (
+                                                  <button onClick={() => handleChangeStatus(selectedWoDetail.workOrder, 'DONE_TO_STOCK')} className="bg-teal-500 hover:bg-teal-600 text-white px-3 py-1.5 rounded text-xs font-bold">→ DONE TO STOCK</button>
+                                              )}
+                                              {selectedWoDetail.woStatus !== 'DONE_TO_SHIPPING' && (
+                                                  <button onClick={() => handleChangeStatus(selectedWoDetail.workOrder, 'DONE_TO_SHIPPING')} className="bg-green-600 hover:bg-green-700 text-white px-3 py-1.5 rounded text-xs font-bold">→ DONE TO SHIPPING</button>
+                                              )}
+                                              <button onClick={() => {
+                                                  if (confirm(`Konfirmasi DONE untuk WO ${selectedWoDetail.workOrder}? WO akan hilang dari list Sewing Assembly.`)) {
+                                                      handleChangeStatus(selectedWoDetail.workOrder, 'DONE');
+                                                  }
+                                              }} className="bg-emerald-700 hover:bg-emerald-800 text-white px-3 py-1.5 rounded text-xs font-bold">✅ DONE (FINAL)</button>
+                                          </>
+                                      )}
+                                  </div>
+                                  {selectedWoDetail.fgVerifiedBy && (
+                                      <p className="text-[10px] text-gray-400 mt-2">Verified by: {selectedWoDetail.fgVerifiedBy} pada {selectedWoDetail.fgVerifiedAt}</p>
+                                  )}
+                              </div>
+                          )}
+
+                          {/* STATUS LOG */}
+                          <div className="bg-white rounded border border-gray-200 overflow-hidden">
+                              <div className="bg-gray-700 text-white px-3 py-2 font-bold text-sm">RIWAYAT STATUS</div>
+                              <div className="divide-y max-h-48 overflow-y-auto">
+                                  {selectedWoDetail.statusLogs?.map((log: any, idx: number) => (
+                                      <div key={idx} className="p-2 flex justify-between items-center text-xs">
+                                          <div className="flex items-center gap-2">
+                                              {getStatusBadge(log.status)}
+                                              {log.remarks && <span className="text-gray-500 italic">{log.remarks}</span>}
+                                          </div>
+                                          <div className="text-right text-gray-400">
+                                              <div>{log.changedBy}</div>
+                                              <div>{log.timestamp}</div>
+                                          </div>
+                                      </div>
+                                  ))}
+                              </div>
+                          </div>
+                      </div>
+                  ) : null}
+              </div>
+          </div>
+      )}
+
+      {/* ── MODAL: SPLIT LINE ── */}
+      {isSplitOpen && selectedWoForAction && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden border-2 border-orange-500">
+                  <div className="bg-orange-600 text-white p-4 flex justify-between items-center">
+                      <h2 className="font-bold">SPLIT LINE — {selectedWoForAction.workOrder}</h2>
+                      <button onClick={() => setIsSplitOpen(false)}><X size={20} /></button>
+                  </div>
+                  <div className="p-5 space-y-4">
+                      <div className="bg-orange-50 border border-orange-200 rounded p-3 text-sm">
+                          <p className="font-bold text-orange-800">WO ini akan dikerjakan oleh 2 line sekaligus.</p>
+                          <p className="text-orange-600 text-xs mt-1">Total output gabungan harus = {selectedWoForAction.orderQty} pcs</p>
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Line Tambahan</label>
+                          <select className="w-full border rounded p-2 text-sm" value={splitForm.newLineId} onChange={e => setSplitForm({...splitForm, newLineId: e.target.value})}>
+                              {LINES.filter(l => l !== selectedWoForAction.lineId).map(l => <option key={l} value={l}>{l}</option>)}
+                          </select>
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Target Qty Line Baru</label>
+                          <input type="number" className="w-full border rounded p-2 text-sm" value={splitForm.targetQty} onChange={e => setSplitForm({...splitForm, targetQty: Number(e.target.value)})} />
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Remarks *</label>
+                          <input type="text" className="w-full border rounded p-2 text-sm" placeholder="Alasan split..." value={splitForm.remarks} onChange={e => setSplitForm({...splitForm, remarks: e.target.value})} />
+                      </div>
+                      <div className="flex justify-end gap-2 pt-2">
+                          <button onClick={() => setIsSplitOpen(false)} className="px-4 py-2 bg-gray-200 rounded font-bold text-sm">Batal</button>
+                          <button onClick={handleSplit} className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded font-bold text-sm">SPLIT</button>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* ── MODAL: TRANSFER LINE ── */}
+      {isTransferOpen && selectedWoForAction && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden border-2 border-teal-500">
+                  <div className="bg-teal-600 text-white p-4 flex justify-between items-center">
+                      <h2 className="font-bold">TRANSFER LINE — {selectedWoForAction.workOrder}</h2>
+                      <button onClick={() => setIsTransferOpen(false)}><X size={20} /></button>
+                  </div>
+                  <div className="p-5 space-y-4">
+                      <div className="bg-teal-50 border border-teal-200 rounded p-3 text-sm">
+                          <p className="font-bold text-teal-800">WO akan dipindah dari <span className="text-red-600">{selectedWoForAction.lineId}</span> ke line baru.</p>
+                          <p className="text-teal-600 text-xs mt-1">Output yang sudah dikerjakan tetap tercatat.</p>
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Line Tujuan</label>
+                          <select className="w-full border rounded p-2 text-sm" value={transferForm.newLineId} onChange={e => setTransferForm({...transferForm, newLineId: e.target.value})}>
+                              {LINES.filter(l => l !== selectedWoForAction.lineId).map(l => <option key={l} value={l}>{l}</option>)}
+                          </select>
+                      </div>
+                      <div>
+                          <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Remarks *</label>
+                          <input type="text" className="w-full border rounded p-2 text-sm" placeholder="Alasan transfer..." value={transferForm.remarks} onChange={e => setTransferForm({...transferForm, remarks: e.target.value})} />
+                      </div>
+                      <div className="flex justify-end gap-2 pt-2">
+                          <button onClick={() => setIsTransferOpen(false)} className="px-4 py-2 bg-gray-200 rounded font-bold text-sm">Batal</button>
+                          <button onClick={handleTransfer} className="px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded font-bold text-sm">TRANSFER</button>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
     </div>
   );
 }

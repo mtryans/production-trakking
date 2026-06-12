@@ -7,8 +7,7 @@ class MaterialLog extends Model
     protected $guarded = [];
     protected $touches = ['productionOrder'];
 
-    public function productionOrder()
-{
-    return $this->belongsTo(ProductionOrder::class);
-}
+    public function productionOrder() {
+        return $this->belongsTo(ProductionOrder::class);
+    }
 }

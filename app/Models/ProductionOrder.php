@@ -11,6 +11,7 @@ class ProductionOrder extends Model
         'end_date'     => 'date',
         'ex_fly_date'  => 'date',
         'is_active'    => 'boolean',
+        'fg_verified_at' => 'datetime',
     ];
 
     public function line() {
@@ -51,4 +52,11 @@ public function getTotalPacAttribute()
         ->where('type', 'PAC')
         ->sum('actual_output');
 }
+public function woStatusLogs() {
+        return $this->hasMany(WoStatusLog::class, 'work_order', 'work_order');
+    }
+
+    public function lineAssignments() {
+        return $this->hasMany(WoLineAssignment::class, 'work_order', 'work_order');
+    }
 }
